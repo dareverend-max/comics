@@ -134,13 +134,15 @@ async function summary(request, env, ctx) {
     arcs: (Array.isArray(i.arcs) ? i.arcs : []).slice(0, 4).map((a) => clip(a, 120)),
     synopsis: clip(i.synopsis, 1500),
   }));
-  if (issues.filter((i) => i.synopsis).length < 2) return json({ error: "Not enough synopses to summarize." }, 400);
+  const mode = input.mode === "gaps" ? "gaps" : "overview";
+  if (mode === "overview" && issues.filter((i) => i.synopsis).length < 2) return json({ error: "Not enough synopses to summarize." }, 400);
+  if (mode === "gaps" && !issues.length) return json({ error: "No issues to fill in." }, 400);
   const series = clip(input.series, 120);
   const publisher = clip(input.publisher, 80);
 
   // Cache by content so repeat searches don't re-run the model.
   const cache = typeof caches !== "undefined" ? caches.default : null;
-  const hash = await sha256(JSON.stringify({ SUMMARY_MODEL, series, issues }));
+  const hash = await sha256(JSON.stringify({ SUMMARY_MODEL, mode, series, publisher, issues }));
   const cacheKey = new Request(new URL(`/api/summary-cache/${hash}`, request.url).toString());
   if (cache) {
     const hit = await cache.match(cacheKey);
@@ -153,6 +155,9 @@ async function summary(request, env, ctx) {
       (i.synopsis || "(no synopsis available)"),
     )
     .join("\n\n");
+
+  if (mode === "gaps") return gaps(env, ctx, cache, cacheKey, series, publisher, issues, listing);
+
   const messages = [
     {
       role: "system",
@@ -178,6 +183,49 @@ async function summary(request, env, ctx) {
   if (!text) return json({ error: "The AI returned an empty overview. Try again." }, 502);
 
   const res = json({ summary: text, model: SUMMARY_MODEL }, 200, { "cache-control": `public, max-age=${CACHE_SECONDS}` });
+  if (cache) ctx.waitUntil(cache.put(cacheKey, res.clone()));
+  return res;
+}
+
+// Issues whose Metron synopsis is missing or thin: let the model use its own
+// knowledge, but only where it is confident, one line per issue.
+async function gaps(env, ctx, cache, cacheKey, series, publisher, issues, listing) {
+  const messages = [
+    {
+      role: "system",
+      content:
+        "You are a careful comics historian. For each listed issue, write a 1-2 sentence plot summary from your own knowledge of that published comic. " +
+        "Describe an issue ONLY if you are confident you know that specific issue of that specific series and volume (the year in brackets identifies the volume). " +
+        "If you are not confident, write UNKNOWN. Never guess, and never pad a thin synopsis with invented detail. " +
+        "Any text already given for an issue (often a short publisher teaser) is context, not something to repeat. " +
+        "Output exactly one line per issue in the form `#<number>: <summary or UNKNOWN>` and nothing else.",
+    },
+    {
+      role: "user",
+      content: `${series}${publisher ? ` (${publisher})` : ""}. Issues with missing or thin synopses:\n\n${listing}`,
+    },
+  ];
+  let text;
+  try {
+    const out = await env.AI.run(SUMMARY_MODEL, { messages, max_tokens: 900, temperature: 0.1 });
+    text = String(out?.response ?? "");
+  } catch (e) {
+    return json({ error: "The AI couldn't fill the gaps. Try again in a moment." }, 502);
+  }
+  const wanted = new Map(issues.map((i) => [i.number.toLowerCase(), i.number]));
+  const found = new Map();
+  for (const line of text.split("\n")) {
+    const m = line.replace(/[*`]/g, "").trim().match(/^#?\s*([^\s:]+)\s*[:\-–]\s*(.+)$/);
+    if (!m) continue;
+    const num = wanted.get(m[1].toLowerCase());
+    const body = m[2].trim();
+    if (!num || found.has(num)) continue;
+    found.set(num, /^unknown\b/i.test(body) ? "" : body.slice(0, 600));
+  }
+  const result = issues.map((i) => ({ number: i.number, text: found.get(i.number) || "" }));
+  const res = json({ gaps: result, model: SUMMARY_MODEL, source: "model-knowledge" }, 200, {
+    "cache-control": `public, max-age=${CACHE_SECONDS}`,
+  });
   if (cache) ctx.waitUntil(cache.put(cacheKey, res.clone()));
   return res;
 }

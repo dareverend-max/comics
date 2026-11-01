@@ -85,6 +85,15 @@ button.chip[aria-pressed="true"]{border-color:var(--magenta)}
 .overview{background:var(--paper);border:1px solid var(--line);border-top:4px solid var(--yellow);border-radius:4px;padding:14px 18px 16px;display:flex;flex-direction:column;gap:10px}
 .overview p{margin:0;max-width:68ch}
 .overview .section-h{margin:0}
+#ov-metron{display:flex;flex-direction:column;gap:10px}
+.gaps{border:1px dashed var(--magenta);border-radius:4px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.gaps-h{font-family:var(--mono);font-size:.75rem;letter-spacing:.1em;text-transform:uppercase;color:var(--magenta);margin:0}
+.gaps .warn{font-size:.85rem;color:var(--muted);margin:0}
+.gaps dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 12px}
+.gaps dt{font-family:var(--display);font-weight:900;font-size:1.15rem;line-height:1.3}
+.gaps dd{margin:0;font-style:italic}
+.check{grid-column:1/-1;display:flex;gap:8px;align-items:flex-start;font-family:var(--body);font-size:.9rem;letter-spacing:0;text-transform:none;color:var(--muted);cursor:pointer}
+.check input{width:auto;margin-top:4px;accent-color:var(--magenta)}
 .note{font-size:.9rem;color:var(--muted);border-left:3px solid var(--yellow);padding-left:10px;margin:0}
 .section-h{font-family:var(--mono);font-size:.75rem;letter-spacing:.1em;text-transform:uppercase;margin:6px 0 0;color:var(--muted);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 footer{font-size:.82rem;color:var(--muted)}
@@ -113,6 +122,7 @@ footer a{color:inherit}
     <div class="field"><label for="r-start">Start #</label><input id="r-start" class="num" value="1" required inputmode="decimal"></div>
     <div class="field"><label for="r-end">End #</label><input id="r-end" class="num" value="7" required inputmode="decimal"></div>
     <div class="actions"><button class="go" type="submit">Summarize issues</button><span class="status" role="status"></span></div>
+    <label class="check" for="r-gaps"><input type="checkbox" id="r-gaps" checked> Fill gaps with the AI's own comics knowledge when Metron's synopses are missing or thin (clearly labelled)</label>
   </form>
 
   <form id="f-arc" autocomplete="off" hidden>
@@ -258,37 +268,72 @@ $("#f-run").addEventListener("submit", async function (e) {
 });
 
 /* ---------- run overview: one summary of every selected issue ---------- */
+// A synopsis is "thin" when it's missing, very short, or only the publisher's solicitation teaser.
+var THIN_CHARS = 160;
+function isThin(d) { return !d.desc || d.desc.length < THIN_CHARS || d.solicit; }
+
+try { var savedGaps = localStorage.getItem("fillGaps"); if (savedGaps !== null) $("#r-gaps").checked = savedGaps === "1"; } catch (e) {}
+$("#r-gaps").addEventListener("change", function () { try { localStorage.setItem("fillGaps", this.checked ? "1" : "0"); } catch (e) {} });
+
+async function postSummary(payload) {
+  var r = await fetch("/api/summary", {
+    method: "POST",
+    headers: { "content-type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload),
+  });
+  var body = await r.json().catch(function () { return null; });
+  if (!r.ok || !body) throw new Error((body && body.error) || "The overview couldn't be written.");
+  return body;
+}
+function issuePayload(d) {
+  return { number: d.number, title: (d.titles || []).join(" / "), arcs: d.arcs.map(function (a) { return a.name; }), synopsis: d.desc || "" };
+}
+function paras(text) { return text.split(/\n\s*\n/).map(function (p) { return "<p>" + esc(p.trim()) + "</p>"; }).join(""); }
+
 async function writeOverview(s, details, my) {
   var box = $("#overview"); if (!box) return;
   var withText = details.filter(function (d) { return d.desc; });
+  var thin = details.filter(isThin);
+  var fillGaps = $("#r-gaps").checked && thin.length > 0;
   box.hidden = false;
-  if (withText.length < 2) {
-    box.innerHTML = '<p class="section-h">Run overview</p><p class="note">Metron has synopses for ' + withText.length + " of these " + details.length +
-      " issues, which isn't enough to write an overview.</p>";
-    return;
-  }
-  box.innerHTML = '<p class="section-h">Run overview</p><p class="tag">Writing an overview of ' + details.length + " issues…</p>";
-  try {
-    var r = await fetch("/api/summary", {
-      method: "POST",
-      headers: { "content-type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        series: s.name, publisher: s.publisher,
-        issues: details.map(function (d) {
-          return { number: d.number, title: (d.titles || []).join(" / "), arcs: d.arcs.map(function (a) { return a.name; }), synopsis: d.desc };
-        }),
-      }),
-    });
-    var body = await r.json().catch(function () { return null; });
-    if (my !== job) return;
-    if (!r.ok || !body || !body.summary) throw new Error((body && body.error) || "The overview couldn't be written.");
-    var missing = details.length - withText.length;
-    box.innerHTML = '<p class="section-h">Run overview</p>' +
-      body.summary.split(/\n\s*\n/).map(function (p) { return "<p>" + esc(p.trim()) + "</p>"; }).join("") +
-      '<p class="tag">Written by AI from the Metron synopses' + (missing ? "; " + missing + " issue" + (missing === 1 ? " has" : "s have") + " no synopsis and " + (missing === 1 ? "is" : "are") + " not covered" : "") + ". Check the issue cards for detail.</p>";
-  } catch (e) {
-    if (my === job) box.innerHTML = '<p class="section-h">Run overview</p><p class="note">' + esc(e.message) + "</p>";
-  }
+  box.innerHTML = '<p class="section-h">Run overview</p><div id="ov-metron"></div>' + (fillGaps ? '<div id="ov-gaps" class="gaps"></div>' : "");
+  var mBox = $("#ov-metron"), gBox = $("#ov-gaps");
+  var base = { series: s.name, publisher: s.publisher };
+
+  // 1. Overview from Metron synopses only.
+  var metronPart = (async function () {
+    if (withText.length < 2) {
+      mBox.innerHTML = '<p class="note">Metron has synopses for ' + withText.length + " of these " + details.length + " issues, which isn't enough for an overview from Metron alone." + (fillGaps ? " See the AI's own notes below." : "") + "</p>";
+      return;
+    }
+    mBox.innerHTML = '<p class="tag">Writing an overview of ' + details.length + " issues…</p>";
+    try {
+      var body = await postSummary(Object.assign({ mode: "overview", issues: details.map(issuePayload) }, base));
+      if (my !== job) return;
+      var missing = details.length - withText.length;
+      mBox.innerHTML = paras(body.summary) +
+        '<p class="tag">Written by AI from the Metron synopses only' + (missing ? "; " + missing + " issue" + (missing === 1 ? " has" : "s have") + " no synopsis there" : "") + ".</p>";
+    } catch (e) { if (my === job) mBox.innerHTML = '<p class="note">' + esc(e.message) + "</p>"; }
+  })();
+
+  // 2. Gap-filling from the AI's own knowledge, kept separate and labelled.
+  var gapPart = (async function () {
+    if (!fillGaps) return;
+    gBox.innerHTML = '<p class="gaps-h">Filling the gaps · AI\'s own knowledge</p><p class="tag">Checking what the AI knows about ' + thin.length + (thin.length === 1 ? " issue" : " issues") + " with missing or thin synopses…</p>";
+    try {
+      var body = await postSummary(Object.assign({ mode: "gaps", issues: thin.map(issuePayload) }, base));
+      if (my !== job) return;
+      var known = (body.gaps || []).filter(function (g) { return g.text; });
+      var unknown = thin.length - known.length;
+      gBox.innerHTML = '<p class="gaps-h">Filling the gaps · AI\'s own knowledge</p>' +
+        '<p class="warn">Not from Metron. This comes from the AI\'s general knowledge of comics and may be wrong, especially for less well-known series.</p>' +
+        (known.length ? "<dl>" + known.map(function (g) { return "<dt>#" + esc(g.number) + "</dt><dd>" + esc(g.text) + "</dd>"; }).join("") + "</dl>"
+          : '<p class="tag">The AI didn\'t recognise these issues well enough to describe them.</p>') +
+        (known.length && unknown ? '<p class="tag">' + unknown + (unknown === 1 ? " issue" : " issues") + " left blank because the AI wasn't confident about " + (unknown === 1 ? "it" : "them") + ".</p>" : "");
+    } catch (e) { if (my === job) gBox.innerHTML = '<p class="gaps-h">Filling the gaps</p><p class="note">' + esc(e.message) + "</p>"; }
+  })();
+
+  await Promise.all([metronPart, gapPart]);
 }
 
 /* ---------- mode 2: where does the arc end? ---------- */

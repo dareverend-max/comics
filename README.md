@@ -2,7 +2,7 @@
 
 A Cloudflare Worker web app that uses the [Metron](https://metron.cloud) comic database to:
 
-1. **Summarize a run**: enter a title, publisher and start/end issue numbers to get an AI-written overview of the whole run (Workers AI, from the Metron synopses), plus each issue's synopsis, credits and the story arcs it belongs to.
+1. **Summarize a run**: enter a title, publisher and start/end issue numbers to get an AI-written overview of the whole run (Workers AI, from the Metron synopses), an optional, clearly labelled "Filling the gaps" note from the AI's own knowledge for issues whose Metron synopsis is missing or thin, plus each issue's synopsis, credits and the story arcs it belongs to.
 2. **Find where an arc ends**: enter one issue number to see its arc, which part it is, the issues still to read (including tie-ins from other series), and the issue and date where the arc finishes.
 
 The Worker serves the page and calls Metron on the server, so your Metron token stays a Cloudflare secret and never reaches the browser. Metron answers are cached at the edge for 12 hours.
