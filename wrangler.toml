@@ -1,0 +1,6 @@
+name = "longbox-arc-finder"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# The Metron API token is a secret, not a var:
+#   npx wrangler secret put METRON_TOKEN
