@@ -42,6 +42,9 @@ form{background:var(--paper);border:1px solid var(--line);border-radius:4px;padd
 label{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 input{font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:3px;background:var(--bg);color:var(--ink);width:100%}
 input.num{font-family:var(--mono)}
+select{font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:3px;background:var(--bg);color:var(--ink);width:100%}
+select:focus-visible{outline:3px solid var(--cyan);outline-offset:2px}
+.pubsel + input{margin-top:6px}
 .actions{grid-column:1/-1;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 .go{font-family:var(--display);font-weight:900;font-size:1.2rem;letter-spacing:.05em;text-transform:uppercase;background:var(--ink);color:var(--bg);border:0;border-radius:3px;padding:10px 22px;cursor:pointer}
 .go:disabled{opacity:.5;cursor:wait}
@@ -117,7 +120,7 @@ footer a{color:inherit}
 
   <form id="f-run" autocomplete="off">
     <div class="field wide"><label for="r-title">Comic title</label><input id="r-title" value="Batman" required></div>
-    <div class="field"><label for="r-pub">Publisher</label><input id="r-pub" value="DC Comics"></div>
+    <div class="field"><label for="r-pubsel">Publisher</label><select id="r-pubsel" class="pubsel" data-other="r-pub" data-default="DC Comics"></select><input id="r-pub" placeholder="Type the publisher" aria-label="Other publisher" hidden></div>
     <div class="field"><label for="r-year">Start year</label><input id="r-year" class="num" value="2011" placeholder="optional" inputmode="numeric"></div>
     <div class="field"><label for="r-start">Start #</label><input id="r-start" class="num" value="1" required inputmode="decimal"></div>
     <div class="field"><label for="r-end">End #</label><input id="r-end" class="num" value="7" required inputmode="decimal"></div>
@@ -127,7 +130,7 @@ footer a{color:inherit}
 
   <form id="f-arc" autocomplete="off" hidden>
     <div class="field wide"><label for="a-title">Comic title</label><input id="a-title" value="Batman" required></div>
-    <div class="field"><label for="a-pub">Publisher</label><input id="a-pub" value="DC Comics"></div>
+    <div class="field"><label for="a-pubsel">Publisher</label><select id="a-pubsel" class="pubsel" data-other="a-pub" data-default="DC Comics"></select><input id="a-pub" placeholder="Type the publisher" aria-label="Other publisher" hidden></div>
     <div class="field"><label for="a-year">Start year</label><input id="a-year" class="num" value="2011" placeholder="optional" inputmode="numeric"></div>
     <div class="field"><label for="a-num">Issue #</label><input id="a-num" class="num" value="3" required inputmode="decimal"></div>
     <div class="actions"><button class="go" type="submit">Find the arc</button><span class="status" role="status"></span></div>
@@ -163,6 +166,30 @@ async function api(path) {
   try { body = await r.json(); } catch (e) {}
   if (!r.ok) throw new Error((body && body.error) || ("Request failed (" + r.status + ")"));
   return body;
+}
+
+/* ---------- publisher dropdowns ---------- */
+// Values are matched loosely by Metron (part of the name is enough).
+var PUBLISHERS = [
+  ["Marvel", "Marvel"], ["DC Comics", "DC Comics"], ["Image", "Image Comics"], ["Dark Horse", "Dark Horse Comics"],
+  ["IDW", "IDW Publishing"], ["BOOM", "BOOM! Studios"], ["Dynamite", "Dynamite Entertainment"], ["Titan", "Titan Comics"],
+  ["Oni", "Oni Press"], ["Valiant", "Valiant"], ["Archie", "Archie Comics"], ["Mad Cave", "Mad Cave Studios"],
+  ["Vault", "Vault Comics"], ["AfterShock", "AfterShock Comics"], ["Ahoy", "AHOY Comics"], ["2000 AD", "2000 AD (Rebellion)"]
+];
+document.querySelectorAll(".pubsel").forEach(function (sel) {
+  sel.innerHTML = '<option value="">Any publisher</option>' +
+    PUBLISHERS.map(function (p) { return '<option value="' + esc(p[0]) + '">' + esc(p[1]) + "</option>"; }).join("") +
+    '<option value="__other">Other\u2026</option>';
+  sel.value = sel.dataset.default || "";
+  var other = document.getElementById(sel.dataset.other);
+  sel.addEventListener("change", function () {
+    other.hidden = sel.value !== "__other";
+    if (!other.hidden) other.focus();
+  });
+});
+function pubValue(prefix) {
+  var sel = document.getElementById(prefix + "-pubsel");
+  return sel.value === "__other" ? document.getElementById(prefix + "-pub").value.trim() : sel.value;
 }
 
 /* ---------- tabs ---------- */
@@ -225,7 +252,7 @@ function card(d, cls, badge) {
 $("#f-run").addEventListener("submit", async function (e) {
   e.preventDefault();
   var form = e.target, my = ++job;
-  var title = $("#r-title").value.trim(), pub = $("#r-pub").value.trim(), year = $("#r-year").value.trim();
+  var title = $("#r-title").value.trim(), pub = pubValue("r"), year = $("#r-year").value.trim();
   var a = numKey($("#r-start").value), b = numKey($("#r-end").value);
   if (!isFinite(a) || !isFinite(b)) return setStatus(form, "Enter start and end issue numbers.", true);
   var lo = Math.min(a, b), hi = Math.max(a, b);
@@ -340,7 +367,7 @@ async function writeOverview(s, details, my) {
 $("#f-arc").addEventListener("submit", async function (e) {
   e.preventDefault();
   var form = e.target, my = ++job;
-  var title = $("#a-title").value.trim(), pub = $("#a-pub").value.trim(), year = $("#a-year").value.trim(), num = $("#a-num").value.trim();
+  var title = $("#a-title").value.trim(), pub = pubValue("a"), year = $("#a-year").value.trim(), num = $("#a-num").value.trim();
   if (!num) return setStatus(form, "Enter an issue number.", true);
   busy(form, true); setStatus(form, "Searching Metron…");
   try {
