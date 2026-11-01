@@ -11,6 +11,7 @@ const CACHE_SECONDS = 60 * 60 * 12;
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/api/summary") return summary(request, env, ctx);
     if (request.method !== "GET") return json({ error: "Method not allowed" }, 405);
 
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -109,6 +110,81 @@ async function route(url, env) {
   }
 
   return null;
+}
+
+// POST /api/summary — one overview of a run of issues, written by Workers AI
+// from the Metron synopses the page already loaded. Needs the AI binding
+// ([ai] binding = "AI" in wrangler.toml).
+const SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
+async function summary(request, env, ctx) {
+  if (!env.AI) {
+    return json({ error: "Run overviews need Workers AI. Add an AI binding named AI to this Worker (Settings → Bindings)." }, 501);
+  }
+  let input;
+  try {
+    input = await request.json();
+  } catch {
+    return json({ error: "Bad request" }, 400);
+  }
+  const clip = (s, n) => String(s || "").slice(0, n);
+  const issues = (Array.isArray(input.issues) ? input.issues : []).slice(0, 25).map((i) => ({
+    number: clip(i.number, 12),
+    title: clip(i.title, 200),
+    arcs: (Array.isArray(i.arcs) ? i.arcs : []).slice(0, 4).map((a) => clip(a, 120)),
+    synopsis: clip(i.synopsis, 1500),
+  }));
+  if (issues.filter((i) => i.synopsis).length < 2) return json({ error: "Not enough synopses to summarize." }, 400);
+  const series = clip(input.series, 120);
+  const publisher = clip(input.publisher, 80);
+
+  // Cache by content so repeat searches don't re-run the model.
+  const cache = typeof caches !== "undefined" ? caches.default : null;
+  const hash = await sha256(JSON.stringify({ SUMMARY_MODEL, series, issues }));
+  const cacheKey = new Request(new URL(`/api/summary-cache/${hash}`, request.url).toString());
+  if (cache) {
+    const hit = await cache.match(cacheKey);
+    if (hit) return hit;
+  }
+
+  const listing = issues
+    .map((i) =>
+      `#${i.number}${i.title ? ` "${i.title}"` : ""}${i.arcs.length ? ` [arc: ${i.arcs.join(", ")}]` : ""}\n` +
+      (i.synopsis || "(no synopsis available)"),
+    )
+    .join("\n\n");
+  const messages = [
+    {
+      role: "system",
+      content:
+        "You summarize comic book runs for readers. Use ONLY the synopses provided; never add events, characters or outcomes that are not in them. " +
+        "Write 2 to 4 short paragraphs of plain prose (no headings, no bullet points, no markdown). " +
+        "Tell the story of the run as a whole: how it starts, how it develops across the issues and story arcs, and where it leaves things. " +
+        "Mention issue numbers in parentheses where it helps, e.g. (#3). Spoilers are fine. If some issues have no synopsis, don't guess what happens in them.",
+    },
+    {
+      role: "user",
+      content: `${series}${publisher ? ` (${publisher})` : ""}, issues #${issues[0].number}–#${issues[issues.length - 1].number}:\n\n${listing}`,
+    },
+  ];
+
+  let text;
+  try {
+    const out = await env.AI.run(SUMMARY_MODEL, { messages, max_tokens: 800, temperature: 0.3 });
+    text = String(out?.response ?? "").trim();
+  } catch (e) {
+    return json({ error: "The AI overview failed. Try again in a moment." }, 502);
+  }
+  if (!text) return json({ error: "The AI returned an empty overview. Try again." }, 502);
+
+  const res = json({ summary: text, model: SUMMARY_MODEL }, 200, { "cache-control": `public, max-age=${CACHE_SECONDS}` });
+  if (cache) ctx.waitUntil(cache.put(cacheKey, res.clone()));
+  return res;
+}
+
+async function sha256(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function slimIssue(i) {

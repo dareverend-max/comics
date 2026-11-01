@@ -82,6 +82,9 @@ button.chip[aria-pressed="true"]{border-color:var(--magenta)}
 .stat .k{font-family:var(--mono);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .finish{background:var(--paper);border:2px solid var(--ink);border-radius:4px;padding:12px 16px;font-size:1.05rem}
 .finish b{font-family:var(--display);font-size:1.35rem;letter-spacing:.02em}
+.overview{background:var(--paper);border:1px solid var(--line);border-top:4px solid var(--yellow);border-radius:4px;padding:14px 18px 16px;display:flex;flex-direction:column;gap:10px}
+.overview p{margin:0;max-width:68ch}
+.overview .section-h{margin:0}
 .note{font-size:.9rem;color:var(--muted);border-left:3px solid var(--yellow);padding-left:10px;margin:0}
 .section-h{font-family:var(--mono);font-size:.75rem;letter-spacing:.1em;text-transform:uppercase;margin:6px 0 0;color:var(--muted);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 footer{font-size:.82rem;color:var(--muted)}
@@ -231,6 +234,7 @@ $("#f-run").addEventListener("submit", async function (e) {
       "<h2>" + esc(s.name) + " #" + esc(chosen[0].number) + "–" + esc(chosen[chosen.length - 1].number) + "</h2>" +
       '<div class="meta"><span class="chip">' + chosen.length + " issues</span><span class=\"chip\" id=\"arc-count\">Reading arcs…</span></div></div>" +
       (capped ? '<p class="note">Showing the first ' + MAX_RUN + " issues to stay inside Metron's rate limit. Run the rest as a second search.</p>" : "") +
+      '<div id="overview" class="overview" hidden></div>' +
       '<div id="arcmap"></div><p class="section-h">Issue by issue</p><div id="cards" class="result"></div>';
     var cards = $("#cards"), details = [];
     for (var n = 0; n < chosen.length; n++) {
@@ -245,11 +249,47 @@ $("#f-run").addEventListener("submit", async function (e) {
     $("#arcmap").innerHTML = order.length ? '<p class="section-h">Arcs in this run</p>' + order.map(function (k) {
       var ns = arcs[k]; return '<div class="arcrow"><b>' + esc(k) + '</b><span class="rng">#' + esc(ns[0]) + (ns.length > 1 ? "–" + esc(ns[ns.length - 1]) : "") + " · " + ns.length + (ns.length === 1 ? " issue" : " issues") + "</span></div>";
     }).join("") : '<p class="note">Metron lists no story arcs for these issues.</p>';
-    setStatus(form, "Done.");
+    setStatus(form, "Writing the run overview…");
+    await writeOverview(s, details, my);
+    if (my === job) setStatus(form, "Done.");
   } catch (err) {
     if (my === job) setStatus(form, err.message, true);
   } finally { if (my === job) busy(form, false); }
 });
+
+/* ---------- run overview: one summary of every selected issue ---------- */
+async function writeOverview(s, details, my) {
+  var box = $("#overview"); if (!box) return;
+  var withText = details.filter(function (d) { return d.desc; });
+  box.hidden = false;
+  if (withText.length < 2) {
+    box.innerHTML = '<p class="section-h">Run overview</p><p class="note">Metron has synopses for ' + withText.length + " of these " + details.length +
+      " issues, which isn't enough to write an overview.</p>";
+    return;
+  }
+  box.innerHTML = '<p class="section-h">Run overview</p><p class="tag">Writing an overview of ' + details.length + " issues…</p>";
+  try {
+    var r = await fetch("/api/summary", {
+      method: "POST",
+      headers: { "content-type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        series: s.name, publisher: s.publisher,
+        issues: details.map(function (d) {
+          return { number: d.number, title: (d.titles || []).join(" / "), arcs: d.arcs.map(function (a) { return a.name; }), synopsis: d.desc };
+        }),
+      }),
+    });
+    var body = await r.json().catch(function () { return null; });
+    if (my !== job) return;
+    if (!r.ok || !body || !body.summary) throw new Error((body && body.error) || "The overview couldn't be written.");
+    var missing = details.length - withText.length;
+    box.innerHTML = '<p class="section-h">Run overview</p>' +
+      body.summary.split(/\n\s*\n/).map(function (p) { return "<p>" + esc(p.trim()) + "</p>"; }).join("") +
+      '<p class="tag">Written by AI from the Metron synopses' + (missing ? "; " + missing + " issue" + (missing === 1 ? " has" : "s have") + " no synopsis and " + (missing === 1 ? "is" : "are") + " not covered" : "") + ". Check the issue cards for detail.</p>";
+  } catch (e) {
+    if (my === job) box.innerHTML = '<p class="section-h">Run overview</p><p class="note">' + esc(e.message) + "</p>";
+  }
+}
 
 /* ---------- mode 2: where does the arc end? ---------- */
 $("#f-arc").addEventListener("submit", async function (e) {

@@ -8,3 +8,7 @@ workers_dev = true
 
 [observability]
 enabled = true
+
+# Workers AI writes the "Run overview" summary.
+[ai]
+binding = "AI"
